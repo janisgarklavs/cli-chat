@@ -2,28 +2,15 @@ package main
 
 import (
 	"log"
-
-	"github.com/marcusolsson/tui-go"
+	"net/http"
 )
 
-type ChatClient struct {
-	loginView tui.Widget
-	chatView  tui.Widget
-	container tui.UI
-}
-
 func main() {
+	server := newServer()
 
-	root := tui.NewVBox()
-
-	ui, err := tui.New(root)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	ui.SetKeybinding("Esc", func() { ui.Quit() })
-
-	if err := ui.Run(); err != nil {
-		log.Fatal(err)
-	}
+	go server.listen()
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		handleIO(server, w, r)
+	})
+	log.Fatal(http.ListenAndServe(":8123", nil))
 }

@@ -3,21 +3,15 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/url"
+	"os"
+	"os/signal"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/marcusolsson/tui-go"
 )
-
-type post struct {
-	username string
-	message  string
-	time     string
-}
-
-var posts = []post{
-	{username: "john", message: "hi, what's up?", time: "14:41"},
-	{username: "jane", message: "not much", time: "14:43"},
-}
 
 func main() {
 	sidebar := tui.NewVBox(
@@ -28,14 +22,17 @@ func main() {
 
 	history := tui.NewVBox()
 
-	for _, m := range posts {
-		history.Append(tui.NewHBox(
-			tui.NewLabel(m.time),
-			tui.NewPadder(1, 0, tui.NewLabel(fmt.Sprintf("<%s>", m.username))),
-			tui.NewLabel(m.message),
-			tui.NewSpacer(),
-		))
+	interupt := make(chan os.Signal, 1)
+	signal.Notify(interupt, os.Interrupt)
+	u := url.URL{Scheme: "ws", Host: "localhost:8123", Path: "/ws"}
+
+	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		log.Fatal("dial: ", err)
 	}
+	defer c.Close()
+
+	done := make(chan struct{})
 
 	historyScroll := tui.NewScrollArea(history)
 	historyScroll.SetAutoscrollToBottom(true)
@@ -54,16 +51,6 @@ func main() {
 	chat := tui.NewVBox(historyBox, inputBox)
 	chat.SetSizePolicy(tui.Expanding, tui.Expanding)
 
-	input.OnSubmit(func(e *tui.Entry) {
-		history.Append(tui.NewHBox(
-			tui.NewLabel(time.Now().Format("15:04")),
-			tui.NewPadder(1, 0, tui.NewLabel(fmt.Sprintf("<%s>", "john"))),
-			tui.NewLabel(e.Text()),
-			tui.NewSpacer(),
-		))
-		input.SetText("")
-	})
-
 	root := tui.NewHBox(sidebar, chat)
 
 	ui, err := tui.New(root)
@@ -71,8 +58,56 @@ func main() {
 		log.Fatal(err)
 	}
 
-	ui.SetKeybinding("Esc", func() { ui.Quit() })
+	input.OnSubmit(func(e *tui.Entry) {
+		if len(e.Text()) == 0 {
+			return
+		}
+		c.WriteMessage(websocket.TextMessage, []byte(e.Text()))
+		input.SetText("")
 
+	})
+
+	go func() {
+		for {
+			select {
+			case <-interupt:
+				log.Println("interrupt")
+				err := c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+				if err != nil {
+					log.Println("write close:", err)
+					ui.Quit()
+					return
+				}
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+				}
+				ui.Quit()
+				return
+			}
+		}
+	}()
+
+	ui.SetKeybinding("Esc", func() { ui.Quit() })
+	go func() {
+		defer close(done)
+		for {
+			_, message, err := c.ReadMessage()
+			if err != nil {
+				log.Println("read: ", err)
+				return
+			}
+			ui.Update(func() {
+				history.Append(tui.NewHBox(
+					tui.NewLabel(time.Now().Format("15:04")),
+					tui.NewPadder(1, 0, tui.NewLabel(fmt.Sprintf("<%s>", "test"))),
+					tui.NewLabel(string(message)),
+					tui.NewSpacer(),
+				))
+			})
+
+		}
+	}()
 	if err := ui.Run(); err != nil {
 		log.Fatal(err)
 	}
